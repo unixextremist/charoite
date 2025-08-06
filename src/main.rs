@@ -10,7 +10,7 @@ use clap::Parser;
 
 use crate::cli::Cli;
 
-#[derive(Clone, Copy)]  // Add Clone and Copy traits
+#[derive(Clone, Copy)] 
 enum BuildSystem {
     Make,
     Cargo,
