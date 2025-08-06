@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="charoite.png" alt="Charoite logo">
+  <img src="logo.png" alt="logo">
 </p>
 
 <p align="center">
