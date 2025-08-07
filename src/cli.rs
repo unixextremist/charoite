@@ -11,6 +11,20 @@ pub struct Cli {
 pub enum Command {
     Install {
         repo: String,
+        #[clap(short, long)]
+        local: bool,
+        #[clap(long)]
+        gitlab: bool,
+        #[clap(long)]
+        codeberg: bool,
+        #[clap(short, long)]
+        branch: Option<String>,
+        #[clap(short, long)]
+        patches: Option<String>,
+        #[clap(short, long, num_args = 1..)]
+        flags: Vec<String>,
+        #[clap(short, long)]
+        yes: bool,
     },
     Search {
         query: String,
