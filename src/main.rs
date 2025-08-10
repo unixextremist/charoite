@@ -2,6 +2,7 @@ mod cli;
 mod install;
 mod search;
 mod utils;
+mod remove;
 
 use std::io;
 use std::path::Path;
@@ -19,6 +20,9 @@ fn main() -> io::Result<()> {
             println!("\x1b[1;35mSearching for {}...\x1b[0m", query);
             search::search(&query);
             Ok(())
+        }
+        Command::Remove { name } => {
+            remove::remove_package(&name)
         }
     }
 }
