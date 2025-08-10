@@ -1,3 +1,4 @@
+use std::io;
 use std::path::Path;
 use std::process::Command;
 use serde::{Serialize, Deserialize};
@@ -11,18 +12,21 @@ pub struct InstalledPackage {
     pub build_file: Option<String>,
     pub hash: Option<String>,
     pub version: Option<String>,
+    pub last_commit_hash: Option<String>,
+    pub install_date: Option<String>,
+    pub last_commit_date: Option<String>,
 }
 
 pub fn check_deps(deps: &[String]) {
     for dep in deps {
-        if !check_dep(dep) {
+        if !check_dependency(dep) {
             eprintln!("Dependency not found: {}", dep);
             std::process::exit(1);
         }
     }
 }
 
-fn check_dep(dep: &str) -> bool {
+pub fn check_dependency(dep: &str) -> bool {
     if dep == "pkg-config" {
         return check_pkg_config();
     }
@@ -57,5 +61,33 @@ pub fn get_privilege_command() -> String {
         "doas".to_string()
     } else {
         "sudo".to_string()
+    }
+}
+
+pub fn get_git_commit_hash(path: &Path) -> io::Result<String> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(path)
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "Failed to get commit hash"))
+    }
+}
+
+pub fn get_git_commit_date(path: &Path) -> io::Result<String> {
+    let output = Command::new("git")
+        .arg("log")
+        .arg("-1")
+        .arg("--format=%cd")
+        .arg("--date=format:%y-%m-%d")
+        .current_dir(path)
+        .output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "Failed to get commit date"))
     }
 }
