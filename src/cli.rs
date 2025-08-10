@@ -29,4 +29,7 @@ pub enum Command {
     Search {
         query: String,
     },
+    Remove {
+        name: String,
+    },
 }
