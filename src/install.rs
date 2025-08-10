@@ -8,7 +8,8 @@ use ansi_term::Colour::{Green, Red, Yellow};
 use serde_json;
 use serde_yaml;
 use sha2::{Sha256, Digest};
-use crate::utils::{self, InstalledPackage};
+use chrono::Local;
+use crate::utils::{self, InstalledPackage, check_dependency};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BuildSystem {
@@ -20,6 +21,7 @@ pub enum BuildSystem {
     Ninja,
     Nimble,
     Stack,
+    Pip,
     Unknown,
 }
 
@@ -127,6 +129,7 @@ pub fn install(
         BuildSystem::Ninja => Green.paint("Ninja"),
         BuildSystem::Nimble => Green.paint("Nimble"),
         BuildSystem::Stack => Green.paint("Stack"),
+        BuildSystem::Pip => Green.paint("Pip"),
         _ => unreachable!()
     });
 
@@ -153,6 +156,36 @@ pub fn install(
     println!("~> Building with flags: {:?}", final_flags);
     build_project(build_system, &build_dir, &final_flags, build_file.as_ref())?;
 
+    if build_system == BuildSystem::Pip {
+        let requirements_file = build_dir.join("requirements.txt");
+        if requirements_file.exists() {
+            println!("~> Installing Python dependencies");
+            let pip_command = if local {
+                vec!["pip", "install", "--user", "-r", requirements_file.to_str().unwrap()]
+            } else {
+                vec!["pip", "install", "-r", requirements_file.to_str().unwrap()]
+            };
+            let status = if local {
+                Command::new(pip_command[0])
+                    .args(&pip_command[1..])
+                    .status()
+            } else {
+                Command::new(utils::get_privilege_command())
+                    .args(&pip_command)
+                    .status()
+            };
+            if let Ok(status) = status {
+                if !status.success() {
+                    eprintln!("{}", Red.paint("Failed to install Python dependencies"));
+                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to install Python dependencies"));
+                }
+            } else {
+                eprintln!("{}", Red.paint("Failed to run pip"));
+                return Err(io::Error::new(io::ErrorKind::Other, "Failed to run pip"));
+            }
+        }
+    }
+
     println!("~> Installing...");
     let install_location = get_install_path(local);
     install_project(build_system, &install_location, &build_dir, repo_name)?;
@@ -173,16 +206,23 @@ pub fn install(
                 }
             }
         }
-        let bin_path = find_binary_path(&build_dir, repo_name, build_system)
-            .unwrap_or_else(|| install_location.bin_path.join(repo_name));
+        
+        let commit_hash = utils::get_git_commit_hash(&build_dir).ok();
+        let commit_date = utils::get_git_commit_date(&build_dir).ok();
+        
+        let installed_binary_path = install_location.bin_path.join(repo_name);
+        
         update_installed_packages(
             repo_name,
             source,
             build_system,
-            &bin_path,
+            &installed_binary_path,
             build_file.as_ref(),
             Some(hash),
             version,
+            commit_hash,
+            Some(Local::now().format("%y-%m-%d").to_string()),
+            commit_date,
         );
     }
 
@@ -234,6 +274,9 @@ fn detect_build_system() -> (BuildSystem, Option<String>, Vec<String>, Vec<Strin
     if Path::new("stack.yaml").exists() {
         build_files.push(("stack.yaml", BuildSystem::Stack));
     }
+    if Path::new("requirements.txt").exists() {
+        build_files.push(("requirements.txt", BuildSystem::Pip));
+    }
     let (build_file, build_system) = if !build_files.is_empty() {
         if build_files.len() > 1 {
             println!("\x1b[1;36mMultiple build files detected. Select one:\x1b[0m");
@@ -264,6 +307,7 @@ fn detect_build_system() -> (BuildSystem, Option<String>, Vec<String>, Vec<Strin
         BuildSystem::Ninja => (vec!["ninja".to_string()], vec![]),
         BuildSystem::Nimble => (vec!["nim".to_string(), "nimble".to_string()], vec![]),
         BuildSystem::Stack => (vec!["stack".to_string()], vec![]),
+        BuildSystem::Pip => (vec!["pip".to_string()], vec![]),
         _ => (vec![], vec![]),
     };
     if build_file == "radon.json" || build_file == "charoite.json" {
@@ -286,6 +330,7 @@ fn parse_charoite_json(path: &Path) -> (BuildSystem, Vec<String>, Vec<String>) {
         "ninja" => BuildSystem::Ninja,
         "nimble" => BuildSystem::Nimble,
         "stack" => BuildSystem::Stack,
+        "pip" => BuildSystem::Pip,
         _ => BuildSystem::Unknown,
     };
     let deps = json["dependencies"].as_array().map(|arr| {
@@ -457,31 +502,8 @@ fn build_project(
         BuildSystem::Ninja => run_command("ninja", &final_flags, false, Some(build_dir)),
         BuildSystem::Nimble => run_command("nimble", &["build", &final_flags.join(" ")], false, Some(build_dir)),
         BuildSystem::Stack => run_command("stack", &["install", &final_flags.join(" "), "--local-bin-path", "bin"], false, Some(build_dir)),
+        BuildSystem::Pip => Ok(()),
         _ => Err(io::Error::new(io::ErrorKind::Unsupported, "Unsupported build system")),
-    }
-}
-
-fn find_binary_path(build_dir: &Path, repo: &str, build_system: BuildSystem) -> Option<PathBuf> {
-    match build_system {
-        BuildSystem::Cargo => {
-            let release_path = build_dir.join("target/release").join(repo);
-            if release_path.exists() { Some(release_path) } else { None }
-        }
-        BuildSystem::Make | BuildSystem::Autotools | BuildSystem::Ninja => {
-            let path = build_dir.join(repo);
-            if path.exists() { Some(path) } else { None }
-        }
-        BuildSystem::Cmake => {
-            let path = build_dir.join("build").join(repo);
-            if path.exists() { Some(path) } else { None }
-        }
-        BuildSystem::Meson => find_executable_in_dir(&build_dir.join("build"), repo),
-        BuildSystem::Nimble => {
-            let path = build_dir.join(repo);
-            if path.exists() { Some(path) } else { None }
-        }
-        BuildSystem::Stack => find_executable_in_dir(&build_dir.join("bin"), repo),
-        _ => None,
     }
 }
 
@@ -560,6 +582,34 @@ fn install_project(
                 Err(io::Error::new(io::ErrorKind::NotFound, "Binary not found"))
             }
         }
+        BuildSystem::Pip => {
+            if !check_dependency("pip") {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "pip not found"));
+            }
+            let pip_command = if install_location.elevate {
+                vec!["pip", "install", "."]
+            } else {
+                vec!["pip", "install", "--user", "."]
+            };
+            let status = if install_location.elevate {
+                Command::new(utils::get_privilege_command())
+                    .args(&pip_command)
+                    .status()
+            } else {
+                Command::new(pip_command[0])
+                    .args(&pip_command[1..])
+                    .status()
+            };
+            if let Ok(status) = status {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(io::ErrorKind::Other, "pip install failed"))
+                }
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, "Failed to run pip"))
+            }
+        }
         _ => Err(io::Error::new(io::ErrorKind::Unsupported, "Unsupported build system")),
     }
 }
@@ -572,6 +622,9 @@ fn update_installed_packages(
     build_file: Option<&String>,
     hash: Option<String>,
     version: Option<String>,
+    commit_hash: Option<String>,
+    install_date: Option<String>,
+    last_commit_date: Option<String>,
 ) {
     let etc_path = Path::new("/etc/charoite");
     if !etc_path.exists() {
@@ -584,6 +637,7 @@ fn update_installed_packages(
     } else {
         Vec::new()
     };
+    
     let pkg = InstalledPackage {
         name: repo_name.to_string(),
         source: source.map(|s| s.to_string()),
@@ -592,8 +646,14 @@ fn update_installed_packages(
         build_file: build_file.cloned(),
         hash,
         version,
+        last_commit_hash: commit_hash,
+        install_date,
+        last_commit_date,
     };
+    
+    installed.retain(|p| p.name != repo_name);
     installed.push(pkg);
+    
     let temp_path = Path::new("/tmp").join("charoite-installed.yaml");
     fs::write(&temp_path, serde_yaml::to_string(&installed).unwrap()).unwrap();
     Command::new(&utils::get_privilege_command())
